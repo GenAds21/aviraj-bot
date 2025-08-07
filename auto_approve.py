@@ -1,14 +1,18 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ChatJoinRequestHandler, ContextTypes
-import os
+import telebot
+import requests
 
-BOT_TOKEN = os.environ['8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI']
-CHANNEL_USERNAME = os.environ.get("@Luck111AvirajBhai_Bot")
+TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"
+bot = telebot.TeleBot(TOKEN)
 
-async def approve_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.chat_join_request.approve()
-    print(f"✅ Approved: {update.chat_join_request.from_user.id}")
+CHANNEL_ID = "@Luck111AvirajBhai_Bot"
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(ChatJoinRequestHandler(approve_join))
-app.run_polling()
+@bot.channel_post_handler(content_types=['new_chat_members'])
+def approve_join_request(message):
+    for user in message.new_chat_members:
+        try:
+            bot.approve_chat_join_request(CHANNEL_ID, user.id)
+            print(f"Approved: {user.first_name}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+bot.polling()
