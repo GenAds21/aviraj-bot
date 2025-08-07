@@ -22,22 +22,42 @@ def handle_broadcast(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        bot.reply_to(message, "📷 Please reply to an image with caption to broadcast.")
-        return
-
-    caption = message.reply_to_message.caption or ""
-    photo_file_id = message.reply_to_message.photo[-1].file_id  # Highest resolution
-
     user_ids = load_users()
-    for uid in user_ids:
-        try:
-            bot.send_photo(uid, photo_file_id, caption=caption)
-        except Exception as e:
-            print(f"❌ Failed to send to {uid}: {e}")
-            continue
 
-    bot.reply_to(message, "✅ Broadcast sent to all users.")
+    # Case 1: Reply to a photo (with or without caption)
+    if message.reply_to_message and message.reply_to_message.photo:
+        caption = message.reply_to_message.caption or ""
+        photo_file_id = message.reply_to_message.photo[-1].file_id
+        for uid in user_ids:
+            try:
+                bot.send_photo(uid, photo_file_id, caption=caption)
+            except Exception as e:
+                print(f"❌ Failed to send photo to {uid}: {e}")
+        bot.reply_to(message, "✅ Photo broadcast sent.")
+
+    # Case 2: Reply to a text message
+    elif message.reply_to_message and message.reply_to_message.text:
+        text = message.reply_to_message.text
+        for uid in user_ids:
+            try:
+                bot.send_message(uid, text)
+            except Exception as e:
+                print(f"❌ Failed to send message to {uid}: {e}")
+        bot.reply_to(message, "✅ Text broadcast sent.")
+
+    # Case 3: No reply — Use text after /broadcast command
+    else:
+        text = message.text.replace("/broadcast", "").strip()
+        if not text:
+            bot.reply_to(message, "⚠ Please send /broadcast with a message or reply to a photo/text.")
+            return
+
+        for uid in user_ids:
+            try:
+                bot.send_message(uid, text)
+            except Exception as e:
+                print(f"❌ Failed to send message to {uid}: {e}")
+        bot.reply_to(message, "✅ Text broadcast sent.")
 
 @bot.message_handler(commands=['start'])
 def start(message):
