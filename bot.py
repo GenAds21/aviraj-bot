@@ -15,17 +15,29 @@ def approve_request(join_request):
     save_user(user_id)  # 👈 Yeh line add karni hai
     bot.send_message(user_id, "✅ Welcome to the channel!")
 
+from telebot import types
+
 @bot.message_handler(commands=['broadcast'])
 def handle_broadcast(message):
     if message.from_user.id != ADMIN_ID:
         return
-    text = message.text.replace("/broadcast ", "")
+
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        bot.reply_to(message, "📷 Please reply to an image with caption to broadcast.")
+        return
+
+    caption = message.reply_to_message.caption or ""
+    photo_file_id = message.reply_to_message.photo[-1].file_id  # Highest resolution
+
     user_ids = load_users()
     for uid in user_ids:
         try:
-            bot.send_message(uid, text)
-        except:
+            bot.send_photo(uid, photo_file_id, caption=caption)
+        except Exception as e:
+            print(f"❌ Failed to send to {uid}: {e}")
             continue
+
+    bot.reply_to(message, "✅ Broadcast sent to all users.")
 
 @bot.message_handler(commands=['start'])
 def start(message):
