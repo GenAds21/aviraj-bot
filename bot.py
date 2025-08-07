@@ -6,11 +6,13 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 ADMIN_ID = 5872702942  # admin ID bina quotes
 
+# ✅ Auto-Approve Join Requests
 @bot.chat_join_request_handler()
 def approve_request(join_request):
     chat_id = join_request.chat.id
     user_id = join_request.from_user.id
     bot.approve_chat_join_request(chat_id, user_id)
+    save_user(user_id)  # 👈 Yeh line add karni hai
     bot.send_message(user_id, "✅ Welcome to the channel!")
 
 @bot.message_handler(commands=['broadcast'])
