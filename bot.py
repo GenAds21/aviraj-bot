@@ -4,7 +4,7 @@ import threading
 BOT_TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"
 bot = telebot.TeleBot(BOT_TOKEN)
 
-ADMIN_ID = 1234567890  # admin ID bina quotes
+ADMIN_ID = 5872702942  # admin ID bina quotes
 
 @bot.chat_join_request_handler()
 def approve_request(join_request):
