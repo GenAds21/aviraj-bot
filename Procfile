@@ -1,1 +1,1 @@
-worker: python auto_approve.py
+worker: python bot.py
