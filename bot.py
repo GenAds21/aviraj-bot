@@ -14,7 +14,6 @@ def approve_request(join_request):
     bot.approve_chat_join_request(chat_id, user_id)
     save_user(user_id)  # 👈 Yeh line add karni hai
     bot.send_message(user_id, "Bhai Apka Joining Request Accept Kar liya ✅ 🥳 अब चैनल से रोज खेलो और PROFIT बनाओ 🤑!")
-
 from telebot import types
 
 @bot.message_handler(commands=['broadcast'])
@@ -22,42 +21,43 @@ def handle_broadcast(message):
     if message.from_user.id != ADMIN_ID:
         return
 
+    if not message.reply_to_message:
+        bot.reply_to(message, "❗Please reply to a message to broadcast (text, image, video, etc.)")
+        return
+
     user_ids = load_users()
+    content = message.reply_to_message
+    sent_count = 0
 
-    # Case 1: Reply to a photo (with or without caption)
-    if message.reply_to_message and message.reply_to_message.photo:
-        caption = message.reply_to_message.caption or ""
-        photo_file_id = message.reply_to_message.photo[-1].file_id
-        for uid in user_ids:
-            try:
-                bot.send_photo(uid, photo_file_id, caption=caption)
-            except Exception as e:
-                print(f"❌ Failed to send photo to {uid}: {e}")
-        bot.reply_to(message, "✅ Photo broadcast sent.")
+    for uid in user_ids:
+        try:
+            if content.text:
+                bot.send_message(uid, content.text)
+            elif content.photo:
+                bot.send_photo(uid, content.photo[-1].file_id, caption=content.caption or "")
+            elif content.video:
+                bot.send_video(uid, content.video.file_id, caption=content.caption or "")
+            elif content.voice:
+                bot.send_voice(uid, content.voice.file_id, caption=content.caption or "")
+            elif content.audio:
+                bot.send_audio(uid, content.audio.file_id, caption=content.caption or "")
+            elif content.document:
+                bot.send_document(uid, content.document.file_id, caption=content.caption or "")
+            elif content.sticker:
+                bot.send_sticker(uid, content.sticker.file_id)
+            else:
+                continue
 
-    # Case 2: Reply to a text message
-    elif message.reply_to_message and message.reply_to_message.text:
-        text = message.reply_to_message.text
-        for uid in user_ids:
-            try:
-                bot.send_message(uid, text)
-            except Exception as e:
-                print(f"❌ Failed to send message to {uid}: {e}")
-        bot.reply_to(message, "✅ Text broadcast sent.")
+            sent_count += 1
 
-    # Case 3: No reply — Use text after /broadcast command
-    else:
-        text = message.text.replace("/broadcast", "").strip()
-        if not text:
-            bot.reply_to(message, "⚠ Please send /broadcast with a message or reply to a photo/text.")
-            return
+        except Exception as e:
+            print(f"❌ Failed to send to {uid}: {e}")
+            continue
 
-        for uid in user_ids:
-            try:
-                bot.send_message(uid, text)
-            except Exception as e:
-                print(f"❌ Failed to send message to {uid}: {e}")
-        bot.reply_to(message, "✅ Text broadcast sent.")
+    bot.reply_to(message, f"✅ Broadcast sent to {sent_count} users.")
+def load_users():
+    with open("users.txt", "r") as f:
+        return [int(line.strip()) for line in f if line.strip().isdigit()]
 
 @bot.message_handler(commands=['start'])
 def start(message):
