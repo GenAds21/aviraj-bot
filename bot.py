@@ -13,7 +13,7 @@ def approve_request(join_request):
     user_id = join_request.from_user.id
     bot.approve_chat_join_request(chat_id, user_id)
     save_user(user_id)  # 👈 Yeh line add karni hai
-    bot.send_message(user_id, "✅ Welcome to the channel!")
+    bot.send_message(user_id, "Bhai Apka Joining Request Accept Kar liya ✅ 🥳 अब चैनल से रोज खेलो और PROFIT बनाओ 🤑!")
 
 from telebot import types
 
