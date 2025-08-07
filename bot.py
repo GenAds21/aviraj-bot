@@ -1,66 +1,69 @@
 import telebot
-import json
-import os
+from flask import Flask, request
 
-BOT_TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"
-CHANNEL_USERNAME = "@Luck111AvirajBhai_Bot" 
-OWNER_ID = 5872702942  
+BOT_TOKEN = '8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI'
+ADMIN_ID = 5872702942
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(_name_)
+user_file = 'users.txt'
 
-USERS_FILE = "members.json"
+# ✅ Save and Load User IDs
+def save_user(user_id):
+    with open(user_file, "a+") as f:
+        f.seek(0)
+        users = f.read().splitlines()
+        if str(user_id) not in users:
+            f.write(f"{user_id}\n")
 
-# Load saved users
 def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            return json.load(f)
-    return []
+    try:
+        with open(user_file, "r") as f:
+            return list(set(int(line.strip()) for line in f if line.strip()))
+    except:
+        return []
 
-# Save user IDs
-def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f)
-
-# /start command: register user
+# ✅ Start command
 @bot.message_handler(commands=['start'])
-def handle_start(message):
-    uid = message.from_user.id
-    users = load_users()
-    if uid not in users:
-        users.append(uid)
-        save_users(users)
-    bot.reply_to(message, "✅ Welcome! You are registered for updates.")
+def start(message):
+    save_user(message.chat.id)
+    bot.send_message(message.chat.id, "👋 Welcome! You will get updates here.")
 
-# /broadcast command (only for you)
+# ✅ Broadcast
 @bot.message_handler(commands=['broadcast'])
 def handle_broadcast(message):
-    if message.from_user.id != OWNER_ID:
+    if message.from_user.id != ADMIN_ID:
         return
-    text = message.text.replace("/broadcast", "", 1).strip()
-    if not text:
-        bot.reply_to(message, "❗ Use: /broadcast Your message here")
-        return
-    users = load_users()
-    success = 0
-    for uid in users:
+    text = message.text.replace("/broadcast", "").strip()
+    user_ids = load_users()
+    sent = 0
+    for uid in user_ids:
         try:
             bot.send_message(uid, text)
-            success += 1
+            sent += 1
         except:
-            pass
-    bot.reply_to(message, f"✅ Broadcast sent to {success} users.")
+            continue
+    bot.send_message(message.chat.id, f"✅ Sent to {sent} users.")
 
-# Auto-approve join request
-@bot.chat_join_request_handler()
-def approve(req):
-    if req.chat.username == CHANNEL_USERNAME.replace("@", ""):
-        bot.approve_chat_join_request(req.chat.id, req.from_user.id)
-        bot.send_message(req.from_user.id, "✅ You’ve been auto-approved!")
-        # Save user to list
-        users = load_users()
-        if req.from_user.id not in users:
-            users.append(req.from_user.id)
-            save_users(users)
+# ✅ Auto-approval of join requests
+@app.route('/' + BOT_TOKEN, methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    if update.chat_join_request:
+        bot.approve_chat_join_request(
+            update.chat_join_request.chat.id,
+            update.chat_join_request.from_user.id
+        )
+        bot.send_message(update.chat_join_request.from_user.id, "✅ Welcome to the channel!")
+    else:
+        bot.process_new_updates([update])
+    return 'ok', 200
 
-bot.infinity_polling()
+# ✅ Root check
+@app.route('/')
+def index():
+    return "Bot running!", 200
+
+# ✅ Run Flask
+if _name_ == "_main_":
+    app.run(host="0.0.0.0", port=8080)
