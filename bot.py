@@ -1,71 +1,98 @@
-# bot.py — Final (SQLite persistent + auto-approve + safe broadcast)
+# bot.py — FINAL (SQLite primary + JSON backup, auto-approve, safe broadcast)
 import telebot
+from telebot import apihelper
 import sqlite3
 import threading
 import time
 import random
+import json
+import os
 import re
-from telebot import apihelper
 
-# ---------------- CONFIG ----------------
-BOT_TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"   # <- your bot token
-ADMIN_ID = 5872702942                                         # <- your Telegram numeric ID (owner only)
+# ========== CONFIG ==========
+BOT_TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"
+ADMIN_ID = 5872702942            # <-- replace with your numeric Telegram ID (no quotes)
 DB_FILE = "users.db"
-MIN_DELAY = 0.5    # minimum seconds between messages
-MAX_DELAY = 1.2    # maximum seconds between messages
-RETRY_WAIT_EXTRA = 1  # extra seconds after Telegram's retry-after
-# ----------------------------------------
+JSON_BACKUP = "users_backup.json"
+MIN_DELAY = 0.5                  # minimum seconds between sends
+MAX_DELAY = 1.2                  # maximum seconds between sends
+RETRY_EXTRA = 1                  # extra seconds to add to retry-after
+MAX_RETRIES_SEND = 3
+# ============================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ---------- SQLite helpers ----------
+# ---------- DB (SQLite) helpers ----------
+def get_conn():
+    return sqlite3.connect(DB_FILE, check_same_thread=False)
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_conn()
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY
                 )""")
     conn.commit()
     conn.close()
+    save_json_backup()  # ensure backup exists
 
-def add_user(user_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+def add_user_db(user_id: int):
     try:
+        conn = get_conn()
+        c = conn.cursor()
         c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (int(user_id),))
         conn.commit()
-    except Exception as e:
-        print("DB add_user error:", e)
-    finally:
         conn.close()
+        save_json_backup()
+    except Exception as e:
+        print("add_user_db error:", e)
 
-def remove_user(user_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+def remove_user_db(user_id: int):
     try:
+        conn = get_conn()
+        c = conn.cursor()
         c.execute("DELETE FROM users WHERE user_id = ?", (int(user_id),))
         conn.commit()
-    except Exception as e:
-        print("DB remove_user error:", e)
-    finally:
         conn.close()
+        save_json_backup()
+    except Exception as e:
+        print("remove_user_db error:", e)
 
-def get_all_users():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users")
-    rows = c.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
+def get_all_users_db():
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users")
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception as e:
+        print("get_all_users_db error:", e)
+        return []
 
-# initialize DB
-init_db()
+# ---------- JSON backup helpers ----------
+def save_json_backup():
+    try:
+        users = get_all_users_db()
+        with open(JSON_BACKUP, "w") as f:
+            json.dump(users, f)
+    except Exception as e:
+        print("save_json_backup error:", e)
 
-# ---------- Helpers for safe sending ----------
-def parse_retry_after(err_text: str):
-    """Try to extract retry-after seconds from Telegram error text."""
-    # error text often contains: "Too Many Requests: retry after X"
-    m = re.search(r"retry after (\d+)", err_text, re.IGNORECASE)
+def load_json_backup_to_db():
+    if not os.path.exists(JSON_BACKUP):
+        return
+    try:
+        with open(JSON_BACKUP, "r") as f:
+            users = json.load(f)
+        for uid in users:
+            add_user_db(uid)
+    except Exception as e:
+        print("load_json_backup_to_db error:", e)
+
+# ---------- safe send helpers ----------
+def parse_retry_after(text: str):
+    m = re.search(r"retry after (\d+)", text, re.IGNORECASE)
     if m:
         try:
             return int(m.group(1))
@@ -74,37 +101,29 @@ def parse_retry_after(err_text: str):
     return None
 
 def safe_send(send_func, *args, **kwargs):
-    """
-    send_func: bot.send_message / send_photo / send_video / ...
-    returns True if sent, False if failed (and removed)
-    Handles Api exceptions like FloodWait and Forbidden (block).
-    """
-    max_retries = 3
+    """Return True if sent, False if should remove (blocked) or permanently failed"""
     attempt = 0
-    while attempt < max_retries:
+    while attempt < MAX_RETRIES_SEND:
         try:
             send_func(*args, **kwargs)
             return True
         except apihelper.ApiTelegramException as e:
-            text = str(e)
-            # FloodWait (Too Many Requests)
-            retry_after = parse_retry_after(text)
-            if retry_after:
-                wait = retry_after + RETRY_WAIT_EXTRA
-                print(f"[safe_send] FloodWait detected. Sleeping {wait}s (attempt {attempt+1})")
+            txt = str(e)
+            retry = parse_retry_after(txt)
+            if retry:
+                wait = retry + RETRY_EXTRA
+                print(f"[safe_send] FloodWait: waiting {wait}s (attempt {attempt+1})")
                 time.sleep(wait)
                 attempt += 1
                 continue
-            # Forbidden or blocked by user — remove user
-            if "bot was blocked" in text.lower() or "forbidden" in text.lower() or "user is deactivated" in text.lower():
-                print(f"[safe_send] User blocked or forbidden: {text}")
-                # caller should remove user
+            low = txt.lower()
+            # user blocked or forbidden -> caller should remove
+            if "bot was blocked" in low or "forbidden" in low or "user is deactivated" in low:
+                print(f"[safe_send] blocked/forbidden: {txt}")
                 return False
-            # other api errors: break/skip
-            print(f"[safe_send] ApiTelegramException (non-flood): {text}")
+            print(f"[safe_send] Api error (non-flood): {txt}")
             return False
         except Exception as ex:
-            # network/other error — wait a bit and retry
             print(f"[safe_send] Exception: {ex} (attempt {attempt+1})")
             time.sleep(1 + attempt)
             attempt += 1
@@ -113,165 +132,154 @@ def safe_send(send_func, *args, **kwargs):
 def random_delay():
     time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
-# ---------------- Handlers ----------------
-
-# /start — register user (persistent)
+# ---------- Handlers ----------
 @bot.message_handler(commands=['start'])
-def handle_start(message):
-    uid = message.from_user.id
-    add_user(uid)
+def cmd_start(m):
     try:
-        bot.reply_to(message, "✅ You are registered for broadcasts.")
+        add_user_db(m.from_user.id)
+        bot.reply_to(m, "✅ Registered for broadcasts. Thank you!")
     except Exception as e:
-        print("Reply failed:", e)
+        print("cmd_start error:", e)
 
-# Auto-approve join requests for private channels/groups
 @bot.chat_join_request_handler()
-def approve_request(join_request):
-    """
-    join_request has: chat.id (channel), from_user.id
-    Approves the join request, adds the user to DB, optionally DM welcome.
-    """
+def join_request_handler(req):
+    """Auto-approve join on private channel; add to DB and welcome DM"""
     try:
-        # Approve (bot must be channel admin with approve permission)
-        bot.approve_chat_join_request(join_request.chat.id, join_request.from_user.id)
-        add_user(join_request.from_user.id)
-        # Try send welcome DM (may fail if user blocked)
+        # Approve join request (bot must be admin with approve permission)
+        bot.approve_chat_join_request(req.chat.id, req.from_user.id)
+        add_user_db(req.from_user.id)
+        # welcome DM (ignore errors)
         try:
-            bot.send_message(join_request.from_user.id, "✅ Your request is approved. Welcome to the channel!")
+            bot.send_message(req.from_user.id, "✅ Your request approved. Welcome to the channel!")
         except Exception:
             pass
-        print("Approved and added:", join_request.from_user.id)
+        print("Approved & added user:", req.from_user.id)
     except Exception as e:
-        print("approve_request error:", e)
+        print("join_request_handler error:", e)
 
-# Universal broadcast:
-# - Reply to a content message with /broadcast -> sends that content
-# - Or /broadcast your text -> sends text
+# Broadcast command: reply-to-message or /broadcast text
 @bot.message_handler(commands=['broadcast'])
-def handle_broadcast(message):
-    if message.from_user.id != ADMIN_ID:
+def cmd_broadcast(m):
+    if m.from_user.id != ADMIN_ID:
         return
-
-    users = get_all_users()
+    users = get_all_users_db()
     if not users:
-        bot.reply_to(message, "⚠ No users to broadcast to.")
+        bot.reply_to(m, "⚠ No users in database.")
         return
 
-    reply = message.reply_to_message
+    reply = m.reply_to_message
     sent = 0
     removed = 0
     failed = 0
 
-    # helper to send and handle removal on block
     def send_and_handle(uid, func, *fargs, **fkwargs):
         nonlocal sent, removed, failed
         ok = safe_send(func, *fargs, **fkwargs)
         if ok:
             sent += 1
             random_delay()
-        else:
-            # if failed due to block/forbidden, remove user
-            # safe_send returns False for both block and other failures — check with one attempt to see if forbidden
-            # We'll attempt a direct check: try a simple send_message to test forbidden reason
-            try:
-                bot.send_chat_action(uid, 'typing')  # quick check (may also throw)
-                # If no exception but previous send failed, count as failed (not removed)
+            return
+        # if safe_send returned False -> check if blocked/forbidden by testing small call
+        try:
+            bot.send_chat_action(uid, 'typing')
+            # if chat_action succeeded but previous send failed, count as fail
+            failed += 1
+            random_delay()
+        except apihelper.ApiTelegramException as e2:
+            low = str(e2).lower()
+            if "bot was blocked" in low or "forbidden" in low or "user is deactivated" in low:
+                remove_user_db(uid)
+                removed += 1
+            else:
                 failed += 1
-                random_delay()
-            except apihelper.ApiTelegramException as e2:
-                txt = str(e2).lower()
-                if "bot was blocked" in txt or "forbidden" in txt or "user is deactivated" in txt:
-                    remove_user(uid)
-                    removed += 1
-                else:
-                    failed += 1
-            except Exception:
-                failed += 1
+        except Exception:
+            failed += 1
 
     try:
         if reply:
-            # Media: prefer in this order (works for common types)
-            # PHOTO
+            # handle media types
             if reply.photo:
-                file_id = reply.photo[-1].file_id
-                caption = reply.caption or ""
+                fid = reply.photo[-1].file_id
+                cap = reply.caption or ""
                 for uid in users:
-                    send_and_handle(uid, bot.send_photo, uid, file_id, caption=caption)
+                    send_and_handle(uid, bot.send_photo, uid, fid, caption=cap)
 
-            # VIDEO
             elif reply.video:
-                file_id = reply.video.file_id
-                caption = reply.caption or ""
+                fid = reply.video.file_id
+                cap = reply.caption or ""
                 for uid in users:
-                    send_and_handle(uid, bot.send_video, uid, file_id, caption=caption)
+                    send_and_handle(uid, bot.send_video, uid, fid, caption=cap)
 
-            # VOICE
-            elif reply.voice:
-                file_id = reply.voice.file_id
-                for uid in users:
-                    send_and_handle(uid, bot.send_voice, uid, file_id)
-
-            # AUDIO (mp3)
-            elif reply.audio:
-                file_id = reply.audio.file_id
-                caption = reply.caption or ""
-                for uid in users:
-                    send_and_handle(uid, bot.send_audio, uid, file_id, caption=caption)
-
-            # DOCUMENT (pdf, zip, etc.)
             elif reply.document:
-                file_id = reply.document.file_id
-                caption = reply.caption or ""
+                fid = reply.document.file_id
+                cap = reply.caption or ""
                 for uid in users:
-                    send_and_handle(uid, bot.send_document, uid, file_id, caption=caption)
+                    send_and_handle(uid, bot.send_document, uid, fid, caption=cap)
 
-            # STICKER
+            elif reply.audio:
+                fid = reply.audio.file_id
+                cap = reply.caption or ""
+                for uid in users:
+                    send_and_handle(uid, bot.send_audio, uid, fid, caption=cap)
+
+            elif reply.voice:
+                fid = reply.voice.file_id
+                for uid in users:
+                    send_and_handle(uid, bot.send_voice, uid, fid)
+
             elif reply.sticker:
-                file_id = reply.sticker.file_id
+                fid = reply.sticker.file_id
                 for uid in users:
-                    send_and_handle(uid, bot.send_sticker, uid, file_id)
+                    send_and_handle(uid, bot.send_sticker, uid, fid)
 
-            # TEXT / CAPTION
             elif reply.text:
                 text = reply.text
                 for uid in users:
                     send_and_handle(uid, bot.send_message, uid, text)
 
             else:
-                bot.reply_to(message, "⚠ Unsupported reply type.")
+                bot.reply_to(m, "⚠ Unsupported reply type for broadcast.")
                 return
-
         else:
-            # direct text after /broadcast
-            text = message.text.replace("/broadcast", "", 1).strip()
+            # direct text after command
+            text = m.text.replace("/broadcast", "", 1).strip()
             if not text:
-                bot.reply_to(message, "⚠ Please reply to a message or send: /broadcast Your message here")
+                bot.reply_to(m, "⚠ Use: reply to a message with /broadcast OR /broadcast your text")
                 return
             for uid in users:
                 send_and_handle(uid, bot.send_message, uid, text)
 
-        bot.reply_to(message, f"✅ Broadcast finished. Sent: {sent}  Removed: {removed}  Failed: {failed}")
-
+        bot.reply_to(m, f"✅ Broadcast finished. Sent: {sent}  Removed: {removed}  Failed: {failed}")
     except Exception as e:
-        print("Broadcast exception:", e)
-        bot.reply_to(message, f"❌ Broadcast error: {e}")
+        print("Broadcast main error:", e)
+        bot.reply_to(m, f"❌ Broadcast error: {e}")
 
-# Extra: Admin command to count users
 @bot.message_handler(commands=['count'])
-def count_cmd(m):
+def cmd_count(m):
     if m.from_user.id != ADMIN_ID:
         return
-    users = get_all_users()
+    users = get_all_users_db()
     bot.reply_to(m, f"Total users in DB: {len(users)}")
 
-# Start polling in a thread (works on Railway with threading trick)
-def run_polling():
-    print("Starting bot polling...")
+# optional: admin can force export backup
+@bot.message_handler(commands=['export_backup'])
+def cmd_export(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    save_json_backup()
+    bot.reply_to(m, f"Backup saved to {JSON_BACKUP}")
+
+# ---------- init ----------
+init_db()
+load_json_backup_to_db()  # if backup exists, restore any missing
+
+# ---------- start polling in thread ----------
+def run():
+    print("Starting polling...")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
 
 if _name_ == "_main_":
-    t = threading.Thread(target=run_polling, daemon=True)
+    t = threading.Thread(target=run, daemon=True)
     t.start()
     # keep main process alive
     while True:
