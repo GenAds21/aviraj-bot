@@ -1,4 +1,4 @@
-# bot.py — FINAL (SQLite primary + JSON backup, auto-approve, safe broadcast)
+# bot.py (crash-resistant final)
 import telebot
 from telebot import apihelper
 import sqlite3
@@ -8,15 +8,17 @@ import random
 import json
 import os
 import re
+import traceback
+import sys
 
 # ========== CONFIG ==========
-BOT_TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"
-ADMIN_ID = 5872702942            # <-- replace with your numeric Telegram ID (no quotes)
+BOT_TOKEN = "8347050926:AAFOGdrN1kCyQDxpgG5orEVUXpshcPiqEyI"   # <- PUT NEW TOKEN HERE (do not share publicly)
+ADMIN_ID = 5872702942                       # <- your numeric Telegram ID
 DB_FILE = "users.db"
 JSON_BACKUP = "users_backup.json"
-MIN_DELAY = 0.5                  # minimum seconds between sends
-MAX_DELAY = 1.2                  # maximum seconds between sends
-RETRY_EXTRA = 1                  # extra seconds to add to retry-after
+MIN_DELAY = 0.5
+MAX_DELAY = 1.2
+RETRY_EXTRA = 1
 MAX_RETRIES_SEND = 3
 # ============================
 
@@ -27,14 +29,18 @@ def get_conn():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def init_db():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY
-                )""")
-    conn.commit()
-    conn.close()
-    save_json_backup()  # ensure backup exists
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY
+                    )""")
+        conn.commit()
+        conn.close()
+        save_json_backup()  # create backup file if missing
+    except Exception as e:
+        print("init_db error:", e)
+        traceback.print_exc(file=sys.stdout)
 
 def add_user_db(user_id: int):
     try:
@@ -46,6 +52,7 @@ def add_user_db(user_id: int):
         save_json_backup()
     except Exception as e:
         print("add_user_db error:", e)
+        traceback.print_exc(file=sys.stdout)
 
 def remove_user_db(user_id: int):
     try:
@@ -57,6 +64,7 @@ def remove_user_db(user_id: int):
         save_json_backup()
     except Exception as e:
         print("remove_user_db error:", e)
+        traceback.print_exc(file=sys.stdout)
 
 def get_all_users_db():
     try:
@@ -68,6 +76,7 @@ def get_all_users_db():
         return [r[0] for r in rows]
     except Exception as e:
         print("get_all_users_db error:", e)
+        traceback.print_exc(file=sys.stdout)
         return []
 
 # ---------- JSON backup helpers ----------
@@ -78,17 +87,19 @@ def save_json_backup():
             json.dump(users, f)
     except Exception as e:
         print("save_json_backup error:", e)
+        traceback.print_exc(file=sys.stdout)
 
 def load_json_backup_to_db():
-    if not os.path.exists(JSON_BACKUP):
-        return
     try:
+        if not os.path.exists(JSON_BACKUP):
+            return
         with open(JSON_BACKUP, "r") as f:
             users = json.load(f)
         for uid in users:
             add_user_db(uid)
     except Exception as e:
         print("load_json_backup_to_db error:", e)
+        traceback.print_exc(file=sys.stdout)
 
 # ---------- safe send helpers ----------
 def parse_retry_after(text: str):
@@ -101,7 +112,6 @@ def parse_retry_after(text: str):
     return None
 
 def safe_send(send_func, *args, **kwargs):
-    """Return True if sent, False if should remove (blocked) or permanently failed"""
     attempt = 0
     while attempt < MAX_RETRIES_SEND:
         try:
@@ -112,19 +122,19 @@ def safe_send(send_func, *args, **kwargs):
             retry = parse_retry_after(txt)
             if retry:
                 wait = retry + RETRY_EXTRA
-                print(f"[safe_send] FloodWait: waiting {wait}s (attempt {attempt+1})")
+                print(f"[safe_send] FloodWait detected. Sleeping {wait}s (attempt {attempt+1})")
                 time.sleep(wait)
                 attempt += 1
                 continue
             low = txt.lower()
-            # user blocked or forbidden -> caller should remove
             if "bot was blocked" in low or "forbidden" in low or "user is deactivated" in low:
-                print(f"[safe_send] blocked/forbidden: {txt}")
+                print("[safe_send] blocked/forbidden detected:", txt)
                 return False
-            print(f"[safe_send] Api error (non-flood): {txt}")
+            print("[safe_send] ApiTelegramException:", txt)
             return False
         except Exception as ex:
-            print(f"[safe_send] Exception: {ex} (attempt {attempt+1})")
+            print("[safe_send] Exception:", ex)
+            traceback.print_exc(file=sys.stdout)
             time.sleep(1 + attempt)
             attempt += 1
     return False
@@ -137,34 +147,33 @@ def random_delay():
 def cmd_start(m):
     try:
         add_user_db(m.from_user.id)
-        bot.reply_to(m, "✅ Registered for broadcasts. Thank you!")
+        bot.reply_to(m, "✅ Registered for broadcasts.")
     except Exception as e:
         print("cmd_start error:", e)
+        traceback.print_exc(file=sys.stdout)
 
 @bot.chat_join_request_handler()
 def join_request_handler(req):
-    """Auto-approve join on private channel; add to DB and welcome DM"""
     try:
-        # Approve join request (bot must be admin with approve permission)
+        # Approve request (bot must be admin with Approve permission)
         bot.approve_chat_join_request(req.chat.id, req.from_user.id)
         add_user_db(req.from_user.id)
-        # welcome DM (ignore errors)
         try:
-            bot.send_message(req.from_user.id, "✅ Your request approved. Welcome to the channel!")
+            bot.send_message(req.from_user.id, "✅ Your request approved. Welcome!")
         except Exception:
             pass
-        print("Approved & added user:", req.from_user.id)
+        print("Approved & added:", req.from_user.id)
     except Exception as e:
         print("join_request_handler error:", e)
+        traceback.print_exc(file=sys.stdout)
 
-# Broadcast command: reply-to-message or /broadcast text
 @bot.message_handler(commands=['broadcast'])
 def cmd_broadcast(m):
     if m.from_user.id != ADMIN_ID:
         return
     users = get_all_users_db()
     if not users:
-        bot.reply_to(m, "⚠ No users in database.")
+        bot.reply_to(m, "⚠ No users in DB.")
         return
 
     reply = m.reply_to_message
@@ -179,10 +188,9 @@ def cmd_broadcast(m):
             sent += 1
             random_delay()
             return
-        # if safe_send returned False -> check if blocked/forbidden by testing small call
+        # check quickly whether blocked (make a small call)
         try:
             bot.send_chat_action(uid, 'typing')
-            # if chat_action succeeded but previous send failed, count as fail
             failed += 1
             random_delay()
         except apihelper.ApiTelegramException as e2:
@@ -197,61 +205,54 @@ def cmd_broadcast(m):
 
     try:
         if reply:
-            # handle media types
             if reply.photo:
                 fid = reply.photo[-1].file_id
                 cap = reply.caption or ""
                 for uid in users:
                     send_and_handle(uid, bot.send_photo, uid, fid, caption=cap)
-
             elif reply.video:
                 fid = reply.video.file_id
                 cap = reply.caption or ""
                 for uid in users:
                     send_and_handle(uid, bot.send_video, uid, fid, caption=cap)
-
             elif reply.document:
                 fid = reply.document.file_id
                 cap = reply.caption or ""
                 for uid in users:
                     send_and_handle(uid, bot.send_document, uid, fid, caption=cap)
-
             elif reply.audio:
                 fid = reply.audio.file_id
                 cap = reply.caption or ""
                 for uid in users:
                     send_and_handle(uid, bot.send_audio, uid, fid, caption=cap)
-
             elif reply.voice:
                 fid = reply.voice.file_id
                 for uid in users:
                     send_and_handle(uid, bot.send_voice, uid, fid)
-
             elif reply.sticker:
                 fid = reply.sticker.file_id
                 for uid in users:
                     send_and_handle(uid, bot.send_sticker, uid, fid)
-
             elif reply.text:
                 text = reply.text
                 for uid in users:
                     send_and_handle(uid, bot.send_message, uid, text)
-
             else:
-                bot.reply_to(m, "⚠ Unsupported reply type for broadcast.")
+                bot.reply_to(m, "⚠ Unsupported reply type.")
                 return
         else:
-            # direct text after command
             text = m.text.replace("/broadcast", "", 1).strip()
             if not text:
-                bot.reply_to(m, "⚠ Use: reply to a message with /broadcast OR /broadcast your text")
+                bot.reply_to(m, "⚠ Reply to a message or use /broadcast Your text")
                 return
             for uid in users:
                 send_and_handle(uid, bot.send_message, uid, text)
 
-        bot.reply_to(m, f"✅ Broadcast finished. Sent: {sent}  Removed: {removed}  Failed: {failed}")
+        bot.reply_to(m, f"✅ Done. Sent: {sent}  Removed: {removed}  Failed: {failed}")
+
     except Exception as e:
         print("Broadcast main error:", e)
+        traceback.print_exc(file=sys.stdout)
         bot.reply_to(m, f"❌ Broadcast error: {e}")
 
 @bot.message_handler(commands=['count'])
@@ -261,26 +262,34 @@ def cmd_count(m):
     users = get_all_users_db()
     bot.reply_to(m, f"Total users in DB: {len(users)}")
 
-# optional: admin can force export backup
 @bot.message_handler(commands=['export_backup'])
 def cmd_export(m):
     if m.from_user.id != ADMIN_ID:
         return
     save_json_backup()
-    bot.reply_to(m, f"Backup saved to {JSON_BACKUP}")
+    bot.reply_to(m, f"Backup saved: {JSON_BACKUP}")
 
 # ---------- init ----------
 init_db()
-load_json_backup_to_db()  # if backup exists, restore any missing
+load_json_backup_to_db()
 
-# ---------- start polling in thread ----------
-def run():
-    print("Starting polling...")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+# ---------- crash-resilient polling ----------
+def run_polling():
+    print("Starting polling (crash-resilient)...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception:
+            print("Exception in polling, restarting after 10s. Traceback:")
+            traceback.print_exc(file=sys.stdout)
+            time.sleep(10)
+            continue
 
 if _name_ == "_main_":
-    t = threading.Thread(target=run, daemon=True)
+    t = threading.Thread(target=run_polling, daemon=True)
     t.start()
-    # keep main process alive
-    while True:
-        time.sleep(60)
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        print("Exiting on KeyboardInterrupt")
