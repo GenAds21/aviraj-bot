@@ -285,7 +285,7 @@ def run_polling():
             time.sleep(10)
             continue
 
-if _name_ == "__main__":
+if __name__ == "__main__":
     t = threading.Thread(target=run_polling, daemon=True)
     t.start()
     try:
